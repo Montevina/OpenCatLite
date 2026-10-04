@@ -67,4 +67,17 @@ void loop() {
   motionUpdate(now);    // 目标帧插值推进（被 robot 启动）
   balanceUpdate(now);   // 读 IMU 快照，算各关节平衡修正量
   buzzerUpdate(now);    // 非阻塞旋律队列
+
+  // —— 临时：IMU 驱动上机验证（command 层的 'gP' 就绪后删除本段）——
+  static uint32_t lastImuPrint = 0;
+  if (now - lastImuPrint >= 500) {
+    lastImuPrint = now;
+    ImuSnapshot snap;
+    if (imuGetSnapshot(&snap)) {
+      Serial.printf("ypr %7.1f %7.1f %7.1f | acc %6.2f %6.2f %6.2f | ex %d ev 0x%02X | %u\n",
+                    snap.ypr[0], snap.ypr[1], snap.ypr[2],
+                    snap.accelReal[0], snap.accelReal[1], snap.accelReal[2],
+                    snap.exception, snap.events, snap.seq);
+    }
+  }
 }
