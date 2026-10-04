@@ -1,7 +1,8 @@
 /* ============================================================
    imu.cpp —— ICM42670 适配层实现
-   数据流：core0 任务每 5ms 读寄存器 -> Madgwick 融合（供应商库）
-   -> 异常判定 -> 自旋锁下发布快照。主循环只调 imuGetSnapshot。
+   数据流：core0 任务每 5ms 调 icm42670_lite 读寄存器 -> Madgwick
+   融合（lite 库内）-> 异常判定 -> 自旋锁下发布快照。主循环只调
+   imuGetSnapshot。
    参数全部沿用原版：ODR 200Hz / 加速度±2g / 陀螺±250dps、
    IMU_PERIOD 5ms、任务栈 2500、异常阈值表见函数内注释。
    ============================================================ */
@@ -12,10 +13,10 @@
 #include "board.h"
 #include "store.h"
 #include "imu.h"
-#include "src/icm42670/petoi_icm42670p.h"  // 供应商库在 src/ 下才会被 arduino-cli 递归编译
+#include "icm42670_lite.h"  // 单文件融合驱动（寄存器+Madgwick 融合一体）
 
-// ---- 供应商库实例（构造只存引用，真正初始化在 imuSetup）----
-static imu42670p icm(Wire, 1);  // address_lsb=1 -> I2C 地址 0x69
+// ---- 驱动实例（address_lsb=1 -> I2C 地址 0x69）----
+static ICM42670Lite icm(Wire, 1);
 
 static bool sReady = false;            // 芯片在位且初始化完成
 static volatile bool sRunning = false; // 采样任务运行标志
