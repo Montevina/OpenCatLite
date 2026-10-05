@@ -35,8 +35,8 @@ const int8_t JOINT_ROTATION_DIR[DOF] = {
     1, -1, -1, 1,
     -1, 1, 1, -1
 };
-// 角度限位（原版 angleLimit）。1 号关节随机型不同（原版 ROBOT_ARM 分支）
-const int8_t JOINT_ANGLE_LIMIT[DOF][2] = {
+// 角度限位（原版 angleLimit 用 int，这里必须跟随：步行关节 ±200 超出 int8_t）
+const int16_t JOINT_ANGLE_LIMIT[DOF][2] = {
     {-120, 120},
 #if defined(BITTLE_R)
     {-10, 180},  // Bittle R 臂肩：可以抬到身后
