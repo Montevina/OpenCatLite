@@ -176,13 +176,8 @@ void imuCalibrate() {
   // 对照原版 calibrateICM()。任务在跑先停，标完重启
   bool wasRunning = sRunning;
   if (wasRunning) imuStop();
-  Serial.println("[IMU] calibrating, keep the robot still and flat...");
-
-  for (uint8_t i = 0; i < 3; i++) {  // 从零累计，getOffset 内部求均值
-    icm.offset_accel[i] = 0;
-    icm.offset_gyro[i] = 0;
-  }
-  icm.getOffset(200);  // 200 个样本，每个间隔 5ms，约 1 秒
+  Serial.println("[IMU] calibrating...");
+  icm.getOffset(200);  // 200 个新样本（DRDY 门控），约 1 秒；结果在函数内完成均值
 
   if (icm.offset_gyro[0] == -32768 || icm.offset_gyro[1] == -32768 || icm.offset_gyro[2] == -32768) {
     Serial.println("[IMU] read error during calibration (-32768), offsets NOT saved");

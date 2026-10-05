@@ -6,8 +6,10 @@
    - 寄存器地址/位值/初始化序列：改写自 InvenSense ICM42670 官方驱动
      （ISC License, Copyright (c) 2018-2022 TDK InvenSense），
      逐条对照 src（已删除的供应商库）与公开数据手册核对
-   - 数据处理与融合（getOffset/transform/Madgwick/漂移补偿/均值滤波）：
-     Kai Mai，源自 Petoi OpenCatEsp32（MIT License, (c) 2021 Rongzhong Li）
+   - 数据处理与融合（标定/坐标换算/Madgwick/漂移补偿/均值滤波）：
+     Kai Mai，源自 Petoi OpenCatEsp32（MIT License, (c) 2021 Rongzhong Li）。
+     2026-10-05 理论审查后的清理：算法本身未动，修复了标定重复计数、
+     首帧 deltaT 失控、asin 域越界 NaN 风险，偏航漂移补偿加静止门控（见 .cpp）
    - 相比官方路径的刻意简化（都有明确理由）：
      * 不用 FIFO/中断/APEX/自检：Bittle 只轮询数据寄存器
      * 不做寄存器 bank 切换：用到的寄存器复位后全在默认 bank
@@ -50,6 +52,7 @@
 #define ICM_WHO_AM_I_VALUE 0x67
 #define ICM_REG_BLK_SEL_W 0x79         // 间接访问选择器，归零即可（不用间接空间）
 #define ICM_REG_BLK_SEL_R 0x7C
+#define ICM_MEAN_FILTER_SIZE 4         // 欧拉角均值滤波窗口（原 Petoi 方案）
 
 class ICM42670Lite {
  public:
@@ -69,13 +72,14 @@ class ICM42670Lite {
   TwoWire *_i2c;
   uint8_t _addr;
   bool _bigEndian;
-  // 数据处理与融合的内部状态（原 petoi_icm42670p 同款）
-  float ax_real, ay_real, az_real, gx_real, gy_real, gz_real;
-  float yawDrift;
-  float yprHistory[4][3];  // MEAN_FILTER_SIZE = 4
+  // 融合内部状态
+  float yawDrift;               // 偏航漂移积分（仅静止时积累，见 Madgwick 内注释）
+  float yprHistory[ICM_MEAN_FILTER_SIZE][3];
   int8_t index;
   bool firstRound;
   float accel_ratio, gyro_ratio;  // LSB -> g / -> dps 换算系数
+  float _gyroDps[3];            // 标定后角速度（度/秒），漂移门控与融合共用
+  float _gbias[3];              // Madgwick 内部自适应陀螺零偏（rad/s）
   uint32_t lastUpdate;
   float deltaT;
   float q[4];
@@ -83,7 +87,7 @@ class ICM42670Lite {
   int writeReg(uint8_t reg, uint8_t val);
   int readReg(uint8_t reg, uint8_t *buf, uint8_t len);
   bool readData();  // DRDY 检查 + 14 字节突发读 + 解析；false = 无新数据/失败
-  void transformIMUDataWithOffset();
+  void applyCalibration();
   void MadgwickQuaternionUpdate(float ax, float ay, float az, float gyrox, float gyroy,
                                 float gyroz, float deltaT);
 };

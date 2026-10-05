@@ -48,12 +48,12 @@ ICM42670Lite::ICM42670Lite(TwoWire &i2c, bool address_lsb) : _i2c(&i2c) {
   deltaT = 0;
   q[0] = 1.0f;
   q[1] = q[2] = q[3] = 0;
-  for (int h = 0; h < 4; h++)
+  for (int h = 0; h < ICM_MEAN_FILTER_SIZE; h++)
     yprHistory[h][0] = yprHistory[h][1] = yprHistory[h][2] = 0;
-  ax_real = ay_real = az_real = gx_real = gy_real = gz_real = 0;
   for (int i = 0; i < 3; i++) {
     a_real[i] = ypr[i] = 0;
     offset_accel[i] = offset_gyro[i] = 0;
+    _gyroDps[i] = _gbias[i] = 0;
     _accelRaw[i] = _gyroRaw[i] = _prevAccelRaw[i] = 0;
   }
 }
@@ -176,71 +176,75 @@ bool ICM42670Lite::readData() {
   return true;
 }
 
-// ---- 以下数据处理与融合为原 petoi_icm42670p 代码，除注明处未改动 ----
-
-void ICM42670Lite::transformIMUDataWithOffset() {
-  a_real[0] = ax_real = (_accelRaw[0] - offset_accel[0]) / accel_ratio;
-  a_real[1] = ay_real = (_accelRaw[1] - offset_accel[1]) / accel_ratio;
-  a_real[2] = az_real = (_accelRaw[2] - offset_accel[2]) / accel_ratio;
-  gx_real = (_gyroRaw[0] - offset_gyro[0]) / gyro_ratio;
-  gy_real = (_gyroRaw[1] - offset_gyro[1]) / gyro_ratio;
-  gz_real = (_gyroRaw[2] - offset_gyro[2]) / gyro_ratio;
+// ---- 数据处理：标定 / 坐标换算 / 融合调度 ----
+// 标定原理：陀螺零输入时输出恒为零偏 -> 均值即零偏；
+//           加速度计水平放置时 Z 轴承 1g -> X/Y 均值即零偏，
+//           Z 均值减去整 1g（accel_ratio 个 LSB）即 Z 零偏。
+// 注意：此法假设板子严格水平，倾斜时重力会串进 X/Y（上机流程已约定"平放"）。
+void ICM42670Lite::getOffset(int num) {
+  Serial.printf("[ICM] calibrating: %d samples, keep still and flat...\n", num);
+  int32_t acc[3] = { 0 }, gyr[3] = { 0 };  // 整数精确累加，避免 float 丢低位
+  int collected = 0;
+  while (collected < num) {
+    if (readData()) {  // 只统计 DRDY 确认的新样本；旧版重复累加过期值
+      for (int i = 0; i < 3; i++) {
+        acc[i] += _accelRaw[i];
+        gyr[i] += _gyroRaw[i];
+      }
+      collected++;
+    }
+    delay(5);  // 200Hz ODR 一个周期
+  }
+  for (int i = 0; i < 3; i++) {
+    offset_accel[i] = (float)acc[i] / num;
+    offset_gyro[i] = (float)gyr[i] / num;
+  }
+  offset_accel[2] -= accel_ratio;  // 去掉水平放置时的 1g
 }
 
-void ICM42670Lite::getOffset(int num) {
-  Serial.println("Start IMU calibration...");
-  Serial.println("Please put the sensor on a leveled plane!");
-  Serial.println("Calculate mean");
-  for (int i = 0; i < num; i++) {
-    readData();
-    offset_accel[0] += _accelRaw[0];
-    offset_accel[1] += _accelRaw[1];
-    offset_accel[2] += _accelRaw[2];
-    offset_gyro[0] += _gyroRaw[0];
-    offset_gyro[1] += _gyroRaw[1];
-    offset_gyro[2] += _gyroRaw[2];
-    delay(5);  // 200Hz ODR 下 5ms 间隔保证读到新样本
+// 输出 = (原始计数 - 零偏) / 满量程换算系数；陀螺另存一份 deg/s 供门控用
+void ICM42670Lite::applyCalibration() {
+  for (int i = 0; i < 3; i++) {
+    a_real[i] = (_accelRaw[i] - offset_accel[i]) / accel_ratio;  // g
+    _gyroDps[i] = (_gyroRaw[i] - offset_gyro[i]) / gyro_ratio;   // deg/s
   }
-
-  offset_accel[0] = offset_accel[0] / num;
-  offset_accel[1] = offset_accel[1] / num;
-  offset_accel[2] = offset_accel[2] / num - accel_ratio;  // Z 轴带 1g 重力
-  offset_gyro[0] = offset_gyro[0] / num;
-  offset_gyro[1] = offset_gyro[1] / num;
-  offset_gyro[2] = offset_gyro[2] / num;
 }
 
 void ICM42670Lite::getImuGyro() {
-  if (!readData()) return;  // 无新数据（原版靠 imuData 旧值比较间接实现同样的跳过）
+  if (!readData()) return;  // 无新数据（旧版靠旧值比较间接实现同样的跳过）
   if (_accelRaw[0] != _prevAccelRaw[0] || _accelRaw[1] != _prevAccelRaw[1]
       || _accelRaw[2] != _prevAccelRaw[2]) {
     for (int i = 0; i < 3; i++) _prevAccelRaw[i] = _accelRaw[i];
-    transformIMUDataWithOffset();
+    applyCalibration();
     uint32_t now = micros();
     deltaT = ((now - lastUpdate) / 1000000.0f);
     lastUpdate = now;
+    if (deltaT <= 0.0f || deltaT > 0.1f)  // 首帧/任务长阻塞保护：按一个采样周期算
+      deltaT = 0.005f;
     // 陀螺速率转 rad/s 后进融合
-    MadgwickQuaternionUpdate(ax_real, ay_real, az_real, gx_real * PI / 180.0f,
-                             gy_real * PI / 180.0f, gz_real * PI / 180.0f, deltaT);
+    MadgwickQuaternionUpdate(a_real[0], a_real[1], a_real[2], _gyroDps[0] * DEG_TO_RAD,
+                             _gyroDps[1] * DEG_TO_RAD, _gyroDps[2] * DEG_TO_RAD, deltaT);
   }
 }
 
-// Sebastian Madgwick 定向滤波（原 petoi_icm42670p 实现，未改动；
-// 含 4 点均值滤波、偏航漂移补偿、az<0 时的俯仰翻转）
+// Sebastian Madgwick 六轴定向滤波（加速度计 + 陀螺，无磁力计）。
+// 原理两句话：用陀螺积分做姿态"预测"，再用"加速度计测得的重力方向 vs
+// 预测姿态给出的重力方向"之差做梯度下降"校正"；beta 是对加速度计的
+// 信任度（越大收敛越快、越抖），zeta 项在线估计陀螺零偏慢漂移。
+// 算法与 Petoi/原 Madgwick 实现逐项一致，仅做了三处健壮性修补（见行内注释）。
 void ICM42670Lite::MadgwickQuaternionUpdate(float ax, float ay, float az, float gyrox,
                                             float gyroy, float gyroz, float deltaT) {
-  float q1 = q[0], q2 = q[1], q3 = q[2], q4 = q[3];         // short name local variable for readability
-  float norm;                                               // vector norm
-  float f1, f2, f3;                                         // objetive funcyion elements
-  float J_11or24, J_12or23, J_13or22, J_14or21, J_32, J_33; // objective function Jacobian elements
+  float q1 = q[0], q2 = q[1], q3 = q[2], q4 = q[3];         // 四元数简写
+  float norm;                                               // 向量模
+  float f1, f2, f3;                                         // 目标函数（重力方向误差）
+  float J_11or24, J_12or23, J_13or22, J_14or21, J_32, J_33; // 雅可比元素
   float qDot1, qDot2, qDot3, qDot4;
   float hatDot1, hatDot2, hatDot3, hatDot4;
-  float gerrx, gerry, gerrz;                                // gyro bias error
-  static float gbiasx = 0.0f, gbiasy = 0.0f, gbiasz = 0.0f; // gyro bias (static to maintain state)
-
-  float GyroMeasError = PI * (40.0f / 180.0f);    // gyroscope measurement error in rads/s (start at 60 deg/s), then reduce after ~10 s to 3
-  float beta = sqrt(3.0f / 4.0f) * GyroMeasError; // compute beta
-  float GyroMeasDrift = PI * (2.0f / 180.0f);     // gyroscope measurement drift in rad/s/s (start at 0.0 deg/s/s)
+  float gerrx, gerry, gerrz;                                // 陀螺零偏误差估计
+  // beta = sqrt(3/4) * 40°/s：收敛快、静止时稍抖（可调小换平滑）
+  float GyroMeasError = PI * (40.0f / 180.0f);
+  float beta = sqrt(3.0f / 4.0f) * GyroMeasError;
+  float GyroMeasDrift = PI * (2.0f / 180.0f);     // 零偏漂移增益
   float zeta = sqrt(3.0f / 4.0f) * GyroMeasDrift;
 
   // Auxiliary variables to avoid repeated arithmetic
@@ -292,12 +296,12 @@ void ICM42670Lite::MadgwickQuaternionUpdate(float ax, float ay, float az, float 
   gerrz = _2q1 * hatDot4 - _2q2 * hatDot3 + _2q3 * hatDot2 - _2q4 * hatDot1;
 
   // Compute and remove gyroscope biases
-  gbiasx += gerrx * deltaT * zeta;
-  gbiasy += gerry * deltaT * zeta;
-  gbiasz += gerrz * deltaT * zeta;
-  gyrox -= gbiasx;
-  gyroy -= gbiasy;
-  gyroz -= gbiasz;
+  _gbias[0] += gerrx * deltaT * zeta;
+  _gbias[1] += gerry * deltaT * zeta;
+  _gbias[2] += gerrz * deltaT * zeta;
+  gyrox -= _gbias[0];
+  gyroy -= _gbias[1];
+  gyroz -= _gbias[2];
 
   // Compute the quaternion derivative
   qDot1 = -_halfq2 * gyrox - _halfq3 * gyroy - _halfq4 * gyroz;
@@ -319,28 +323,37 @@ void ICM42670Lite::MadgwickQuaternionUpdate(float ax, float ay, float az, float 
   q[2] = q3 * norm;
   q[3] = q4 * norm;
 
-  // transform quaternion to euler
+  // ---- 四元数 -> 欧拉角（含 4 点均值滤波与偏航漂移补偿，原 Petoi 方案）----
   yprHistory[index][0] = -(atan2(2.0f * (q[1] * q[2] + q[0] * q[3]),
                                  q[0] * q[0] + q[1] * q[1] - q[2] * q[2] - q[3] * q[3]))
-                         * 180.0f / PI;
+                         * 180.0f / PI;  // 负号 = Petoi 的偏航符号约定
   float diff = yprHistory[index][0]
-               - yprHistory[(index + 4 - 1) % 4][0];  // MEAN_FILTER_SIZE=4；避免负数取模
-  if (abs(diff) < 0.1)
+               - yprHistory[(index + ICM_MEAN_FILTER_SIZE - 1) % ICM_MEAN_FILTER_SIZE][0];
+  // 偏航漂移补偿：原方案把"4 帧间隔 yaw 变化 < 0.1°"一律当漂移积分扣除，
+  // 原理性缺陷是真实的慢速旋转（<5°/s，如慢速转弯）也会被吞掉。
+  // 此处加静止门控：三轴角速度均 < 1°/s（即真的没在转）才积累漂移。
+  // 若要回退到原行为，把 still 条件改成 true 即可。
+  bool still = fabsf(_gyroDps[0]) < 1.0f && fabsf(_gyroDps[1]) < 1.0f
+               && fabsf(_gyroDps[2]) < 1.0f;
+  if (still && fabsf(diff) < 0.1f)
     yawDrift += diff;
   ypr[0] = yprHistory[index][0] - yawDrift;
-  int8_t prevCount = firstRound ? index : 4;
-  int8_t newCount = firstRound ? index + 1 : 4;
+  // pitch/roll 的 4 点滑动均值：预热期(前 4 帧)按已有样本数平均，之后全窗平均
+  int8_t prevCount = firstRound ? index : ICM_MEAN_FILTER_SIZE;
+  int8_t newCount = firstRound ? index + 1 : ICM_MEAN_FILTER_SIZE;
   ypr[1] = ypr[1] * prevCount - yprHistory[index][1];
   ypr[2] = ypr[2] * prevCount - yprHistory[index][2];
-  yprHistory[index][1] = (asin(2.0f * (q[1] * q[3] - q[0] * q[2]))) * 180.0f / PI;
-  if (az < 0)  // raw pitch 不会超过 90 度
+  float pitchArg = 2.0f * (q[1] * q[3] - q[0] * q[2]);
+  if (pitchArg > 1.0f) pitchArg = 1.0f;    // 浮点误差可能越界，asin 域外是 NaN
+  if (pitchArg < -1.0f) pitchArg = -1.0f;
+  yprHistory[index][1] = (asin(pitchArg)) * 180.0f / PI;  if (az < 0)  // raw pitch 不会超过 90 度
     yprHistory[index][1] = (yprHistory[index][1] < 0 ? -1 : 1) * 180 - yprHistory[index][1];
   yprHistory[index][2] = (atan2(2.0f * (q[0] * q[1] + q[2] * q[3]),
                                 q[0] * q[0] - q[1] * q[1] - q[2] * q[2] + q[3] * q[3]))
                          * 180.0f / PI;
   ypr[1] = (ypr[1] + yprHistory[index][1]) / newCount;
   ypr[2] = (ypr[2] + yprHistory[index][2]) / newCount;
-  if (firstRound && newCount >= 4)
+  if (firstRound && newCount >= ICM_MEAN_FILTER_SIZE)
     firstRound = false;
-  index = (index + 1) % 4;
+  index = (index + 1) % ICM_MEAN_FILTER_SIZE;
 }
