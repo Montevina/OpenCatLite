@@ -76,6 +76,8 @@ static void publish(int8_t persistent, uint8_t events) {
   }
   sPub.exception = persistent;
   sPub.events |= events;  // 累积锁存，不清旧值
+  sPub.still = icm.zuptStill();
+  sPub.temperature = icm.temperatureC();
   sPub.seq = ++sSeq;
   sPub.timestamp = millis();
   portEXIT_CRITICAL(&sMux);
@@ -88,7 +90,8 @@ static void imuTask(void *param) {
   while (sRunning) {
     if (millis() - lastSample > IMU_PERIOD_MS) {
       lastSample = millis();
-      icm.getImuGyro();  // 读寄存器 + Madgwick 融合（数据没变时内部跳过）
+      icm.getImuGyro();  // 读寄存器 + Madgwick 融合 + 施加 ZUPT yaw 校正
+      icm.zuptUpdate();  // ZUPT：静止检测 + 会话零偏重估（机会主义，不阻塞）
       for (uint8_t i = 0; i < 3; i++) {
         sAcc[i] = icm.a_real[i] * 10.0;  // 原版 xyzReal = a_real * GRAVITY
         sYpr[i] = icm.ypr[i];
@@ -187,6 +190,7 @@ void imuCalibrate() {
     storeWriteImuOffset(off);
     Serial.printf("[IMU] offsets saved: %.1f %.1f %.1f %.1f %.1f %.1f\n",
                   off[0], off[1], off[2], off[3], off[4], off[5]);
+    icm.zuptReset();  // 新静态零偏接管全部偏移，ZUPT 会话层清零重来
   }
   if (wasRunning) startTask();
 }

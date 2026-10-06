@@ -35,10 +35,13 @@ enum ImuEventBits : uint8_t {
 };
 
 struct ImuSnapshot {
-  float ypr[3];        // 偏航/俯仰/横滚（度）。偏航已取负 = 极坐标约定（右转为负）
+  float ypr[3];        // 偏航/俯仰/横滚（度）。偏航已取负 = 极坐标约定（右转为负），
+                       // 且含 ZUPT 零偏校正（输出侧限速叠加，平滑无跳变）
   float accelReal[3];  // 去重力加速度，单位 1g×10（原版 xyzReal 同款，直立时 z≈+10）
   int8_t exception;    // ImuException，持续性
   uint8_t events;      // ImuEventBits 累积，imuGetSnapshot 读走后清零
+  bool still;          // ZUPT 判定"静止中"（robot 层可选利用）
+  float temperature;   // 芯片温度 °C（暂只记录不补偿，留作温漂数据分析）
   uint32_t seq;        // 快照序号，调用方可用来判断是否更新过
   uint32_t timestamp;  // millis() 时刻
 };

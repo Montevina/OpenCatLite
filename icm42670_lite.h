@@ -54,13 +54,26 @@
 #define ICM_REG_BLK_SEL_R 0x7C
 #define ICM_MEAN_FILTER_SIZE 4         // 欧拉角均值滤波窗口（原 Petoi 方案）
 
+// ---- ZUPT（零速更新）参数区：上机后按实测振荡残余微调 ----
+#define ZUPT_WIN 80            // 统计滑窗样本数（400ms @ 200Hz ODR）
+#define ZUPT_CONFIRM_TICKS 60  // 静止确认计数（300ms；慢进）
+#define ZUPT_EST_TICKS 20      // 静止期零偏重估周期（100ms）
+#define ZUPT_GYRO_STD_TH 0.2f  // 静止判据：三轴角速度 STD 上限（°/s）
+#define ZUPT_ACC_STD_TH 0.05f  // 静止判据：加速度模 STD 上限（g）
+#define ZUPT_BLEND 0.4f        // 零偏慢混合速率（防单次误判毒化）
+#define ZUPT_SLEW_DPS 2.0f     // yaw 校正量输出限速（°/s，平滑无跳变）
+
 class ICM42670Lite {
  public:
   ICM42670Lite(TwoWire &i2c, bool address_lsb);
   int begin();   // 探测 + I2C 模式配置 + 软复位；0=成功
   int init(uint16_t odr, uint16_t accel_fsr_g, uint16_t gyro_fsr_dps);  // 配置并启动传感器
-  void getOffset(int num);  // 静置标定（num 个样本，每个间隔 5ms）
+  void getOffset(int num);  // 静置标定（num 个新样本，DRDY 门控）
   void getImuGyro();        // 每个采样 tick 调用；数据无更新时内部自动跳过
+  void zuptUpdate();        // ZUPT：静止检测 + 会话零偏重估 + yaw 校正（每 tick 在 getImuGyro 后调）
+  void zuptReset();         // 清空 ZUPT 状态（重新标定后调用）
+  bool zuptStill() const { return _zs == ZUPT_STATIONARY; }
+  float temperatureC() const { return _tempC; }
 
   volatile uint32_t i2cErrorCount = 0;  // I2C 事务失败累计（供健康监测）
   float a_real[3];          // 去重力加速度，单位 g（imu.cpp 读取）
@@ -84,10 +97,26 @@ class ICM42670Lite {
   float deltaT;
   float q[4];
   int16_t _accelRaw[3], _gyroRaw[3], _prevAccelRaw[3];
+  int16_t _tempRaw;
+  float _tempC;
+  // ---- ZUPT 状态（见 .cpp 的状态机注释图）----
+  enum ZuptState : uint8_t { ZUPT_MOVING, ZUPT_PENDING, ZUPT_STATIONARY };
+  ZuptState _zs;
+  int _zuptCnt;                 // PENDING 计数 / STATIONARY 估计分频
+  uint32_t _sampleSeq, _zuptSeenSeq;  // 样本锁定：只摄取 DRDY 确认的新样本
+  float _ringG[3][ZUPT_WIN];    // 陀螺残差滑窗（已扣静态+会话零偏）
+  float _ringA[ZUPT_WIN];       // 加速度模滑窗
+  int _ringHead, _ringFill;
+  float _sumG[3], _sumSqG[3], _sumA, _sumSqA;  // 滑窗增量统计（O(1) 均值/方差）
+  float _sessionBias[3];        // 会话零偏：ZUPT 维护，applyCalibration 里扣除
+  float _movingTime;            // 非静止态累积时长（yaw 校正分摊用，秒）
+  float _corrTarget, _corrNow;  // yaw 校正：目标值 / 限速逼近中的当前值（度）
+  float _medianScratch[ZUPT_WIN];
   int writeReg(uint8_t reg, uint8_t val);
   int readReg(uint8_t reg, uint8_t *buf, uint8_t len);
   bool readData();  // DRDY 检查 + 14 字节突发读 + 解析；false = 无新数据/失败
   void applyCalibration();
+  float windowMedian(const float *ring);  // 滑窗中位数（插入排序，静态草稿区）
   void MadgwickQuaternionUpdate(float ax, float ay, float az, float gyrox, float gyroy,
                                 float gyroz, float deltaT);
 };

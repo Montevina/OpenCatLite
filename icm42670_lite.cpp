@@ -56,6 +56,9 @@ ICM42670Lite::ICM42670Lite(TwoWire &i2c, bool address_lsb) : _i2c(&i2c) {
     _gyroDps[i] = _gbias[i] = 0;
     _accelRaw[i] = _gyroRaw[i] = _prevAccelRaw[i] = 0;
   }
+  _tempRaw = 0;
+  _tempC = 25.0f;
+  zuptReset();
 }
 
 // ---- 底层 I2C 事务（对照官方 i2c_read/i2c_write，补了返回值检查）----
@@ -164,8 +167,12 @@ bool ICM42670Lite::readData() {
   if (!(st & ICM_DRDY_BIT)) return false;
   uint8_t b[14];  // temp(2) + accel(6) + gyro(6)
   if (readReg(ICM_REG_TEMP_DATA1, b, 14)) return false;
+  // 温度：16 位补码，128 LSB/°C，0 对应 25°C（数据手册换算；只记录暂不补偿）
+  int16_t t = _bigEndian ? (int16_t)(((uint16_t)b[0] << 8) | b[1])
+                         : (int16_t)(((uint16_t)b[1] << 8) | b[0]);
+  _tempC = t / 128.0f + 25.0f;
   for (int i = 0; i < 6; i++) {
-    uint8_t hi = b[2 + i * 2], lo = b[3 + i * 2];  // 前两字节是温度，跳过
+    uint8_t hi = b[2 + i * 2], lo = b[3 + i * 2];
     int16_t val = _bigEndian ? (int16_t)(((uint16_t)hi << 8) | lo)
                              : (int16_t)(((uint16_t)lo << 8) | hi);
     if (i < 3)
@@ -173,6 +180,7 @@ bool ICM42670Lite::readData() {
     else
       _gyroRaw[i - 3] = val;
   }
+  _sampleSeq++;  // ZUPT 靠它做样本锁定
   return true;
 }
 
@@ -202,11 +210,11 @@ void ICM42670Lite::getOffset(int num) {
   offset_accel[2] -= accel_ratio;  // 去掉水平放置时的 1g
 }
 
-// 输出 = (原始计数 - 零偏) / 满量程换算系数；陀螺另存一份 deg/s 供门控用
+// 输出 = (原始计数 - 静态零偏) / 满量程系数 - 会话零偏(ZUPT 在线维护)
 void ICM42670Lite::applyCalibration() {
   for (int i = 0; i < 3; i++) {
     a_real[i] = (_accelRaw[i] - offset_accel[i]) / accel_ratio;  // g
-    _gyroDps[i] = (_gyroRaw[i] - offset_gyro[i]) / gyro_ratio;   // deg/s
+    _gyroDps[i] = (_gyroRaw[i] - offset_gyro[i]) / gyro_ratio - _sessionBias[i];  // deg/s
   }
 }
 
@@ -224,7 +232,139 @@ void ICM42670Lite::getImuGyro() {
     // 陀螺速率转 rad/s 后进融合
     MadgwickQuaternionUpdate(a_real[0], a_real[1], a_real[2], _gyroDps[0] * DEG_TO_RAD,
                              _gyroDps[1] * DEG_TO_RAD, _gyroDps[2] * DEG_TO_RAD, deltaT);
+    ypr[0] += _corrNow;  // ZUPT yaw 校正：只在融合刷新后叠加，避免重复累加
   }
+}
+
+/* ============================================================
+   ZUPT（零速更新）—— 机会主义静止校准
+   状态机（慢进快出）：
+     MOVING ──统计量连续满足──> PENDING ──保持 300ms──> STATIONARY
+        ^────── 任一统计量破坏，瞬时退出 ──────┘│
+     STATIONARY 期间每 100ms：滑窗中位数 = 零偏残差 δ，
+     会话零偏 += 0.4·δ（慢混合），同时把本轮发现的 z 轴零偏
+     增量 × 非静止累积时长 计入 yaw 校正目标（近似分摊）。
+   静止判据（滑窗 80 样本/400ms）：三轴角速度 STD < 0.2°/s
+   且加速度模 STD < 0.05g。STD 对常值零偏天然免疫，
+   停机振荡（零均值）由确认时间过滤，被拎着移动由加速度模过滤。
+   校正经 _corrNow 限速逼近目标后叠加在 ypr[0] 输出侧，
+   不触碰 Madgwick 积分器内部 —— 修正平滑无跳变。
+   ============================================================ */
+void ICM42670Lite::zuptUpdate() {
+  if (_sampleSeq == _zuptSeenSeq) return;  // 无新样本（样本锁定，防重复摄取）
+  _zuptSeenSeq = _sampleSeq;
+
+  // ---- 滑窗摄取 + O(1) 增量统计 ----
+  float am = sqrtf(a_real[0] * a_real[0] + a_real[1] * a_real[1] + a_real[2] * a_real[2]);
+  if (_ringFill < ZUPT_WIN) {
+    for (int i = 0; i < 3; i++) {
+      _ringG[i][_ringFill] = _gyroDps[i];
+      _sumG[i] += _gyroDps[i];
+      _sumSqG[i] += _gyroDps[i] * _gyroDps[i];
+    }
+    _ringA[_ringFill] = am;
+    _sumA += am;
+    _sumSqA += am * am;
+    _ringFill++;
+  } else {
+    int h = _ringHead;
+    for (int i = 0; i < 3; i++) {
+      float old = _ringG[i][h];
+      _sumG[i] += _gyroDps[i] - old;
+      _sumSqG[i] += _gyroDps[i] * _gyroDps[i] - old * old;
+      _ringG[i][h] = _gyroDps[i];
+    }
+    float oldA = _ringA[h];
+    _sumA += am - oldA;
+    _sumSqA += am * am - oldA * oldA;
+    _ringA[h] = am;
+    _ringHead = (h + 1) % ZUPT_WIN;
+  }
+
+  // ---- 静止判据 ----
+  bool statsOk = false;
+  if (_ringFill >= ZUPT_WIN) {
+    float n = _ringFill;
+    float maxStdG = 0;
+    for (int i = 0; i < 3; i++) {
+      float var = _sumSqG[i] / n - (_sumG[i] / n) * (_sumG[i] / n);
+      if (var < 0) var = 0;  // 浮点误差防护
+      float std = sqrtf(var);
+      if (std > maxStdG) maxStdG = std;
+    }
+    float varA = _sumSqA / n - (_sumA / n) * (_sumA / n);
+    if (varA < 0) varA = 0;
+    statsOk = (maxStdG < ZUPT_GYRO_STD_TH) && (sqrtf(varA) < ZUPT_ACC_STD_TH);
+  }
+
+  // ---- 状态机（慢进快出）----
+  switch (_zs) {
+    case ZUPT_MOVING:
+      if (statsOk) {
+        _zs = ZUPT_PENDING;
+        _zuptCnt = 1;
+      }
+      break;
+    case ZUPT_PENDING:
+      if (!statsOk)
+        _zs = ZUPT_MOVING;  // 快出：任一统计量破坏立即回退
+      else if (++_zuptCnt >= ZUPT_CONFIRM_TICKS) {
+        _zs = ZUPT_STATIONARY;
+        _zuptCnt = 0;
+      }
+      break;
+    case ZUPT_STATIONARY:
+      if (!statsOk) {
+        _zs = ZUPT_MOVING;
+        break;
+      }
+      if (++_zuptCnt >= ZUPT_EST_TICKS) {  // 每 100ms 一次零偏重估
+        _zuptCnt = 0;
+        float delta[3];
+        for (int i = 0; i < 3; i++) delta[i] = windowMedian(_ringG[i]);
+        for (int i = 0; i < 3; i++) _sessionBias[i] += ZUPT_BLEND * delta[i];
+        // yaw 校正分摊：本轮发现的 z 零偏增量 × 此前非静止累积时长。
+        // 近似假设零偏漂移发生在运动期间；分批混合下多轮收敛到全量
+        _corrTarget -= ZUPT_BLEND * delta[2] * _movingTime;
+        _movingTime = 0;
+      }
+      break;
+  }
+  if (_zs != ZUPT_STATIONARY) _movingTime += 0.005f;  // 每个新样本 5ms
+
+  // ---- 校正限速逼近（施加在 getImuGyro 的融合输出侧）----
+  float step = ZUPT_SLEW_DPS * 0.005f;
+  float d = _corrTarget - _corrNow;
+  if (d > step) d = step;
+  else if (d < -step) d = -step;
+  _corrNow += d;
+}
+
+void ICM42670Lite::zuptReset() {
+  _zs = ZUPT_MOVING;
+  _zuptCnt = 0;
+  _sampleSeq = _zuptSeenSeq = 0;
+  _ringHead = _ringFill = 0;
+  for (int i = 0; i < 3; i++) _sumG[i] = _sumSqG[i] = _sessionBias[i] = 0;
+  _sumA = _sumSqA = 0;
+  _movingTime = 0;
+  _corrTarget = _corrNow = 0;
+}
+
+// 滑窗中位数：复制到静态草稿区插入排序。只在 STATIONARY 每 100ms
+// 调 3 次（80 元素），开销可忽略；草稿区不进任务栈（栈只有 2500 字节）
+float ICM42670Lite::windowMedian(const float *ring) {
+  for (int i = 0; i < ZUPT_WIN; i++) _medianScratch[i] = ring[i];
+  for (int i = 1; i < ZUPT_WIN; i++) {
+    float v = _medianScratch[i];
+    int j = i - 1;
+    while (j >= 0 && _medianScratch[j] > v) {
+      _medianScratch[j + 1] = _medianScratch[j];
+      j--;
+    }
+    _medianScratch[j + 1] = v;
+  }
+  return 0.5f * (_medianScratch[ZUPT_WIN / 2 - 1] + _medianScratch[ZUPT_WIN / 2]);
 }
 
 // Sebastian Madgwick 六轴定向滤波（加速度计 + 陀螺，无磁力计）。
