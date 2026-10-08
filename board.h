@@ -6,6 +6,7 @@
    ============================================================ */
 #ifndef BOARD_H
 #define BOARD_H
+#include <stdint.h>
 
 // ---- 机型（只放开一个；同板同引脚，差异在舵机型号/限位/技能数据）----
 #define BITTLE      // Bittle X：P1L 塑料舵机
@@ -46,6 +47,14 @@
 #define WALKING_DOF 8   // 实际腿关节数
 #define PWM_NUM 12      // 实际舵机数
 #define SERIAL_BAUD 115200
+
+// ---- 舵机 GPIO（下标 = 物理舵机号 0~11；顺序同原版 PWM_pin[12]）----
+// 关节 -> 舵机号 的映射在 joints.h（JOINT_SERVO），本表只管"舵机号 -> GPIO"
+const uint8_t SERVO_PIN[PWM_NUM] = {
+    18, 14, 5,  27,  // 0-3  头/尾组（原版注释：head or shoulder roll）
+    23, 4,  12, 33,  // 4-7  肩俯仰
+    19, 15, 13, 32   // 8-11 膝
+};
 
 // ---- 舵机参数（原版 espServo.h）----
 #define SERVO_FREQ_HZ 240        // Petoi 用 240Hz 驱动，不是标准 50Hz

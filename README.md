@@ -1,7 +1,10 @@
 # OpenCatLite
 
-OpenCat ESP32 (Bittle) 固件重构骨架。五层架构，当前为框架阶段：**全部实现函数为空**，
-每个空函数的 TODO 注释标明参考原版（Petoi OpenCatEsp32）的哪个文件、哪些函数、搬运时要注意什么。
+OpenCat ESP32 (Bittle) 固件重构。五层架构，模块逐个实现中，已实现：
+**imu**（ICM42670 融合驱动 + ZUPT 零速更新）、**store**（NVS 持久化）、
+**servoPwm**（LEDC 12 通道舵机输出）、**joints**（逻辑关节->脉宽换算链）。
+其余模块为空函数骨架，每个空函数的 TODO 注释标明参考原版（Petoi OpenCatEsp32）
+的哪个文件、哪些函数、搬运时要注意什么。
 
 ## 架构
 
@@ -38,6 +41,8 @@ L1 板级     board.h        机型/引脚/常量（全项目唯一允许裸引�
 
 ## 编译验证
 
-`arduino-cli compile --fqbn esp32:esp32:esp32 OpenCatLite`（Arduino core 2.0.12），
-BITTLE 与 BITTLE_R 两个变体均已通过（骨架基线约 19% Flash / 6% RAM）。
-Bittle R 变体可用 `--build-property "compiler.cpp.extra_flags=-DBITTLE_R"` 验证。
+`arduino-cli compile --fqbn esp32:esp32:esp32 --warnings default OpenCatLite`（Arduino core 2.0.12），
+BITTLE 与 BITTLE_R 两个变体均已通过（约 23% Flash / 7% RAM）。
+**必须带 `--warnings default`**：ESP32 核心默认 `-w` 会吞掉全部警告（曾因此让
+int8_t 溢出静默通过多轮编译）。Bittle R 变体加
+`--build-property "compiler.cpp.extra_flags=-DBITTLE_R"` 验证。

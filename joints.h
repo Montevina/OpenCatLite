@@ -1,11 +1,12 @@
 /* ============================================================
-   joints —— L3 运动层：逻辑关节模型
+   joints —— L3 运动层：逻辑关节模型（已实现）
    一处集中"逻辑角度 -> 物理脉宽"的全部换算：
-     限幅 -> 方向翻转 -> 加零位(=135+middleShift*dir) -> 加校准 -> 脉宽
-   挖实现：原版 src/motion.h calibratedPWM() +
+     限幅 -> 零位(=量程/2 + middleShift*dir) + 校准 -> 角度*方向 -> 脉宽
+   换算公式对照原版 src/motion.h calibratedPWM() +
    src/espServo.h attachAllESPServos() 的零位公式（61-62 行）。
-   数据表抄自原版 OpenCat.h BITTLE 段，但改成"关节号直接索引 GPIO"，
-   取代原版 PWM_pin[] + "i>3 则 i-4" 的双重映射（4~7 号填 -1）。
+   数据表抄自原版 OpenCat.h BITTLE 段；关节->舵机的间接层
+   （JOINT_SERVO，等效原版 (i>3)?i-4:i）保留，GPIO 表在 board.h。
+   校准值存 NVS（store），改值不自动保存——'s' 命令存（命令层负责）。
    ============================================================ */
 #ifndef JOINTS_H
 #define JOINTS_H
@@ -14,12 +15,12 @@
 
 // 关节编号：0=头偏航 1=头俯仰(Bittle X)/臂肩(Bittle R) 2=尾关节(Bittle X)/夹爪(Bittle R) 3=预留
 //           4~7 不存在(-1)  8~11=肩  12~15=膝
-// 关节 -> GPIO（BiBoard_V1_0 + BITTLE），-1 = 该关节本机型不存在
-const int8_t JOINT_PIN[DOF] = {
-    18, 14, 5, 27,       // 头/肩滚动组
+// 关节 -> 物理舵机号（-1 = 本机型无此关节）；舵机号 -> GPIO 见 board.h SERVO_PIN[]
+const int8_t JOINT_SERVO[DOF] = {
+    0, 1, 2, 3,          // 头/尾组
     -1, -1, -1, -1,      // Bittle 无此排关节
-    23, 4, 12, 33,       // 肩俯仰
-    19, 15, 13, 32       // 膝
+    4, 5, 6, 7,          // 肩
+    8, 9, 10, 11         // 膝
 };
 // 装配中位偏移（原版 middleShift）
 const int8_t JOINT_MIDDLE_SHIFT[DOF] = {

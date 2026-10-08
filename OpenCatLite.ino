@@ -82,4 +82,17 @@ void loop() {
                     (unsigned long)snap.seq);
     }
   }
+
+  // —— 临时：舵机上机验证（command 层的 'c'/'i' 就绪后删除本段）——
+  // 只动 0 号关节（头偏航，最安全）：±30° 慢扫，25°/s
+  static uint32_t lastServoSweep = 0;
+  static float sweepAngle = 0;
+  static int8_t sweepDir = 1;
+  if (now - lastServoSweep >= 40) {
+    lastServoSweep = now;
+    sweepAngle += 1.0f * sweepDir;
+    if (sweepAngle >= 30) sweepDir = -1;
+    if (sweepAngle <= -30) sweepDir = 1;
+    jointsSetAngle(0, sweepAngle);
+  }
 }
