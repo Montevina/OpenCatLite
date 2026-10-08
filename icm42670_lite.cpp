@@ -180,6 +180,11 @@ bool ICM42670Lite::readData() {
     else
       _gyroRaw[i - 3] = val;
   }
+  // 削顶计数：原始值贴满 ADC 满量程 = 该轴饱和（削顶期间积分会少算）
+  for (int i = 0; i < 3; i++) {
+    if (_gyroRaw[i] >= 32700 || _gyroRaw[i] <= -32700) gyroClipCount++;
+    if (_accelRaw[i] >= 32700 || _accelRaw[i] <= -32700) accelClipCount++;
+  }
   _sampleSeq++;  // ZUPT 靠它做样本锁定
   return true;
 }

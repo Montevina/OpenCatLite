@@ -76,6 +76,8 @@ class ICM42670Lite {
   float temperatureC() const { return _tempC; }
 
   volatile uint32_t i2cErrorCount = 0;  // I2C 事务失败累计（供健康监测）
+  volatile uint32_t gyroClipCount = 0;   // 陀螺 ADC 削顶累计（高速旋转排查：±2000dps 档下应基本不动）
+  volatile uint32_t accelClipCount = 0;  // 加速度 ADC 削顶累计（强冲击场景参考）
   float a_real[3];          // 去重力加速度，单位 g（imu.cpp 读取）
   float ypr[3];             // 偏航/俯仰/横滚，度（偏航未取负，imu.cpp 处理约定）
   float offset_accel[3];    // 标定偏移（原始 LSB 计数），标定结果存 NVS

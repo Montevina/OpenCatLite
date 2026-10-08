@@ -15,9 +15,12 @@ void storeSetup();                          // 打开命名空间；首次上电
 void storeReadCalib(int8_t *calib16);
 void storeWriteCalib(const int8_t *calib16);
 
-// IMU 标定偏移（键 "imuOff"，ICM42670 为 6 个 float）
+// IMU 标定偏移（6 个 float：accel xyz + gyro xyz；
+// 键名同原版 icm_accel0..2 / icm_gyro0..2，注意偏移是"原始 LSB 计数"，
+// 陀螺量程变了旧存档即失效，需重标）
 void storeReadImuOffset(float *offset6);
 void storeWriteImuOffset(const float *offset6);
+bool storeHasImuOffset();   // NVS 里是否已有存档（区分"从未标定"与"标定值恰好为 0"）
 
 // 杂项（键名同原版："ID"/"buzzerVolume"/"bootSndState"/"versionDate"/"birthmark"）
 void storeReadName(char *buf, uint8_t cap);

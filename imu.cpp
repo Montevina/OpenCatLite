@@ -3,8 +3,9 @@
    数据流：core0 任务每 5ms 调 icm42670_lite 读寄存器 -> Madgwick
    融合（lite 库内）-> 异常判定 -> 自旋锁下发布快照。主循环只调
    imuGetSnapshot。
-   参数全部沿用原版：ODR 200Hz / 加速度±2g / 陀螺±250dps、
-   IMU_PERIOD 5ms、任务栈 2500、异常阈值表见函数内注释。
+   参数：IMU_PERIOD 5ms、任务栈 2500、异常阈值表见函数内注释。
+   陀螺量程 ±2000dps（原版 ±250 会在手快转时削顶少算角度，
+   2026-10-06 实测确认后提高；量化噪声 +12% 相对器件本底可忽略）。
    ============================================================ */
 #include <Arduino.h>
 #include <Wire.h>
@@ -78,6 +79,8 @@ static void publish(int8_t persistent, uint8_t events) {
   sPub.events |= events;  // 累积锁存，不清旧值
   sPub.still = icm.zuptStill();
   sPub.temperature = icm.temperatureC();
+  sPub.clipGyro = icm.gyroClipCount;
+  sPub.clipAccel = icm.accelClipCount;
   sPub.seq = ++sSeq;
   sPub.timestamp = millis();
   portEXIT_CRITICAL(&sMux);
@@ -148,19 +151,20 @@ void imuSetup(bool calibrateNow) {
   }
   Serial.println("[IMU] ICM42670 found");
   icm.begin();
-  icm.init(200, 2, 250);  // ODR 200Hz / 加速度 ±2g / 陀螺 ±250dps（原版参数）
+  icm.init(200, 2, 2000);  // ODR 200Hz / 加速度 ±2g / 陀螺 ±2000dps（见文件头注释）
   delay(10);
 
-  float off[6] = {0};  // [ax ay az gx gy gz]
-  storeReadImuOffset(off);
-  icm.offset_accel[0] = off[0]; icm.offset_accel[1] = off[1]; icm.offset_accel[2] = off[2];
-  icm.offset_gyro[0] = off[3]; icm.offset_gyro[1] = off[4]; icm.offset_gyro[2] = off[5];
-  bool hasCalib = off[0] != 0 || off[1] != 0 || off[2] != 0 || off[3] != 0 || off[4] != 0 || off[5] != 0;
-  if (!hasCalib)
-    Serial.println("[IMU] no stored offsets, calibrate for the first time! (gc)");
-
-  if (calibrateNow && hasCalib == false)  // 有存档时不再自动标定
-    imuCalibrate();
+  if (storeHasImuOffset()) {
+    float off[6];  // [ax ay az gx gy gz]
+    storeReadImuOffset(off);
+    icm.offset_accel[0] = off[0]; icm.offset_accel[1] = off[1]; icm.offset_accel[2] = off[2];
+    icm.offset_gyro[0] = off[3]; icm.offset_gyro[1] = off[4]; icm.offset_gyro[2] = off[5];
+    Serial.printf("[IMU] stored offsets: %.1f %.1f %.1f | %.1f %.1f %.1f\n",
+                  off[0], off[1], off[2], off[3], off[4], off[5]);
+  } else {
+    Serial.println("[IMU] no stored offsets yet: ZUPT will learn gyro bias; run 'gc' for full calibration");
+    if (calibrateNow) imuCalibrate();
+  }
 
   sReady = startTask();
   if (sReady) waitConvergence();

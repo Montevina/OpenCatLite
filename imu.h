@@ -42,6 +42,8 @@ struct ImuSnapshot {
   uint8_t events;      // ImuEventBits 累积，imuGetSnapshot 读走后清零
   bool still;          // ZUPT 判定"静止中"（robot 层可选利用）
   float temperature;   // 芯片温度 °C（暂只记录不补偿，留作温漂数据分析）
+  uint32_t clipGyro;   // 陀螺削顶累计（诊断：高速旋转若仍增长说明超 2000dps）
+  uint32_t clipAccel;  // 加速度削顶累计（诊断）
   uint32_t seq;        // 快照序号，调用方可用来判断是否更新过
   uint32_t timestamp;  // millis() 时刻
 };
