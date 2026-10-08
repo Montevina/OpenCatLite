@@ -237,7 +237,6 @@ void ICM42670Lite::getImuGyro() {
     // 陀螺速率转 rad/s 后进融合
     MadgwickQuaternionUpdate(a_real[0], a_real[1], a_real[2], _gyroDps[0] * DEG_TO_RAD,
                              _gyroDps[1] * DEG_TO_RAD, _gyroDps[2] * DEG_TO_RAD, deltaT);
-    ypr[0] += _corrNow;  // ZUPT yaw 校正：只在融合刷新后叠加，避免重复累加
   }
 }
 
@@ -247,13 +246,13 @@ void ICM42670Lite::getImuGyro() {
      MOVING ──统计量连续满足──> PENDING ──保持 300ms──> STATIONARY
         ^────── 任一统计量破坏，瞬时退出 ──────┘│
      STATIONARY 期间每 100ms：滑窗中位数 = 零偏残差 δ，
-     会话零偏 += 0.4·δ（慢混合），同时把本轮发现的 z 轴零偏
-     增量 × 非静止累积时长 计入 yaw 校正目标（近似分摊）。
+     会话零偏 += 0.4·δ（慢混合，applyCalibration 里扣除）。
    静止判据（滑窗 80 样本/400ms）：三轴角速度 STD < 0.2°/s
    且加速度模 STD < 0.05g。STD 对常值零偏天然免疫，
    停机振荡（零均值）由确认时间过滤，被拎着移动由加速度模过滤。
-   校正经 _corrNow 限速逼近目标后叠加在 ypr[0] 输出侧，
-   不触碰 Madgwick 积分器内部 —— 修正平滑无跳变。
+   注：曾有过"运动期误差追补"（δ×非静止时长 回补 yaw），2026-10-06
+   实测会累积数百度异常偏移，已移除——运动期的历史漂移交给外部
+   参考（激光 SLAM/EKF）或下次完整标定处理。
    ============================================================ */
 void ICM42670Lite::zuptUpdate() {
   if (_sampleSeq == _zuptSeenSeq) return;  // 无新样本（样本锁定，防重复摄取）
@@ -323,26 +322,13 @@ void ICM42670Lite::zuptUpdate() {
         _zs = ZUPT_MOVING;
         break;
       }
-      if (++_zuptCnt >= ZUPT_EST_TICKS) {  // 每 100ms 一次零偏重估
+      if (++_zuptCnt >= ZUPT_EST_TICKS) {  // 每 100ms 用滑窗中位数刷新会话零偏
         _zuptCnt = 0;
-        float delta[3];
-        for (int i = 0; i < 3; i++) delta[i] = windowMedian(_ringG[i]);
-        for (int i = 0; i < 3; i++) _sessionBias[i] += ZUPT_BLEND * delta[i];
-        // yaw 校正分摊：本轮发现的 z 零偏增量 × 此前非静止累积时长。
-        // 近似假设零偏漂移发生在运动期间；分批混合下多轮收敛到全量
-        _corrTarget -= ZUPT_BLEND * delta[2] * _movingTime;
-        _movingTime = 0;
+        for (int i = 0; i < 3; i++)
+          _sessionBias[i] += ZUPT_BLEND * windowMedian(_ringG[i]);
       }
       break;
   }
-  if (_zs != ZUPT_STATIONARY) _movingTime += 0.005f;  // 每个新样本 5ms
-
-  // ---- 校正限速逼近（施加在 getImuGyro 的融合输出侧）----
-  float step = ZUPT_SLEW_DPS * 0.005f;
-  float d = _corrTarget - _corrNow;
-  if (d > step) d = step;
-  else if (d < -step) d = -step;
-  _corrNow += d;
 }
 
 void ICM42670Lite::zuptReset() {
@@ -352,8 +338,6 @@ void ICM42670Lite::zuptReset() {
   _ringHead = _ringFill = 0;
   for (int i = 0; i < 3; i++) _sumG[i] = _sumSqG[i] = _sessionBias[i] = 0;
   _sumA = _sumSqA = 0;
-  _movingTime = 0;
-  _corrTarget = _corrNow = 0;
 }
 
 // 滑窗中位数：复制到静态草稿区插入排序。只在 STATIONARY 每 100ms
@@ -474,15 +458,21 @@ void ICM42670Lite::MadgwickQuaternionUpdate(float ax, float ay, float az, float 
                          * 180.0f / PI;  // 负号 = Petoi 的偏航符号约定
   float diff = yprHistory[index][0]
                - yprHistory[(index + ICM_MEAN_FILTER_SIZE - 1) % ICM_MEAN_FILTER_SIZE][0];
-  // 偏航漂移补偿：原方案把"4 帧间隔 yaw 变化 < 0.1°"一律当漂移积分扣除，
-  // 原理性缺陷是真实的慢速旋转（<5°/s，如慢速转弯）也会被吞掉。
-  // 此处加静止门控：三轴角速度均 < 1°/s（即真的没在转）才积累漂移。
-  // 若要回退到原行为，把 still 条件改成 true 即可。
+  if (diff > 180.0f) diff -= 360.0f;        // 跨 ±180° 分界时先做 wrap 修正，
+  else if (diff < -180.0f) diff += 360.0f;  // 防止把 ±360° 假跳变当变化量
+  // 偏航漂移补偿：静止门控（三轴角速度均 < 1°/s）且帧间变化 < 0.1° 才积累，
+  // 只吞"静止时的慢漂移"，不吞真实慢转（<1°/s 的极慢转动会丢，接受的折衷）
   bool still = fabsf(_gyroDps[0]) < 1.0f && fabsf(_gyroDps[1]) < 1.0f
                && fabsf(_gyroDps[2]) < 1.0f;
-  if (still && fabsf(diff) < 0.1f)
+  if (still && fabsf(diff) < 0.1f) {
     yawDrift += diff;
+    // 补偿量按 360° 折叠保持有界（角度 mod 360 等价，不影响输出）
+    if (yawDrift > 180.0f) yawDrift -= 360.0f;
+    else if (yawDrift < -180.0f) yawDrift += 360.0f;
+  }
   ypr[0] = yprHistory[index][0] - yawDrift;
+  while (ypr[0] > 180.0f) ypr[0] -= 360.0f;   // 输出约定：归一化到 (-180°,180°]
+  while (ypr[0] <= -180.0f) ypr[0] += 360.0f;
   // pitch/roll 的 4 点滑动均值：预热期(前 4 帧)按已有样本数平均，之后全窗平均
   int8_t prevCount = firstRound ? index : ICM_MEAN_FILTER_SIZE;
   int8_t newCount = firstRound ? index + 1 : ICM_MEAN_FILTER_SIZE;
