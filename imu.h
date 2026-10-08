@@ -46,6 +46,7 @@ struct ImuSnapshot {
   uint32_t clipAccel;  // 加速度削顶累计（诊断）
   float yawDrift;      // 偏航漂移补偿累计量（度；调试：应保持小值，巨大=异常）
   float gyroBiasZ;     // Z 轴会话零偏 °/s（ZUPT 学习结果，调试）
+  float yawCorr;       // 运动期漂移补正当前值（度；调试：静止后应收敛停住）
   uint32_t seq;        // 快照序号，调用方可用来判断是否更新过
   uint32_t timestamp;  // millis() 时刻
 };

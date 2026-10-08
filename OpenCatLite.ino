@@ -79,12 +79,12 @@ void loop() {
     lastImuPrint = now;
     ImuSnapshot snap;
     if (imuGetSnapshot(&snap)) {
-      Serial.printf("ypr %7.1f %7.1f %7.1f | acc %6.2f %6.2f %6.2f | ex %d ev 0x%02X | st %d T %4.1f | c %lu/%lu | d %6.1f b %5.2f | %lu\n",
+      Serial.printf("ypr %7.1f %7.1f %7.1f | acc %6.2f %6.2f %6.2f | ex %d ev 0x%02X | st %d T %4.1f | c %lu/%lu | d %6.1f b %5.2f y %6.1f | %lu\n",
                     snap.ypr[0], snap.ypr[1], snap.ypr[2],
                     snap.accelReal[0], snap.accelReal[1], snap.accelReal[2],
                     snap.exception, snap.events, snap.still ? 1 : 0, snap.temperature,
                     (unsigned long)snap.clipGyro, (unsigned long)snap.clipAccel,
-                    snap.yawDrift, snap.gyroBiasZ,
+                    snap.yawDrift, snap.gyroBiasZ, snap.yawCorr,
                     (unsigned long)snap.seq);
     }
   }

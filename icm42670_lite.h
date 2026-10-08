@@ -10,9 +10,9 @@
      Kai Mai，源自 Petoi OpenCatEsp32（MIT License, (c) 2021 Rongzhong Li）。
      2026-10-05 理论审查后的清理：算法本身未动，修复了标定重复计数、
      首帧 deltaT 失控、asin 域越界 NaN 风险，偏航漂移补偿加静止门控（见 .cpp）
-     2026-10-06：移除"运动期误差追补"机制（δ×非静止时长的追补公式在长时间
-     非静止后会累积出数百度的荒谬偏移，实测 yaw 显示窗口漂移到 (55°,415°]）；
-     偏航输出归一化 (-180°,180°]，漂移补偿跨 ±180° 分界改 wrap 感知
+     2026-10-06：偏航输出归一化 (-180°,180°]，漂移补偿跨 ±180° 分界改 wrap 感知；
+     "运动期误差追补"第一版无界导致数百度的荒谬偏移（实测 415° 窗口漂移），
+     现以有界形式恢复：δ_z × 运动时长，时长上限 60s、补正量上限 ±45°（参数区）
    - 相比官方路径的刻意简化（都有明确理由）：
      * 不用 FIFO/中断/APEX/自检：Bittle 只轮询数据寄存器
      * 不做寄存器 bank 切换：用到的寄存器复位后全在默认 bank
@@ -64,6 +64,9 @@
 #define ZUPT_GYRO_STD_TH 0.2f  // 静止判据：三轴角速度 STD 上限（°/s）
 #define ZUPT_ACC_STD_TH 0.05f  // 静止判据：加速度模 STD 上限（g）
 #define ZUPT_BLEND 0.4f        // 零偏慢混合速率（防单次误判毒化）
+#define ZUPT_SLEW_DPS 3.0f     // yaw 补正量输出限速（°/s，平滑无跳变）
+#define ZUPT_CORR_T_CAP_S 60.0f  // 运动时长进追补公式的上限（秒，防长非静止期积累失控）
+#define ZUPT_CORR_MAX_DEG 45.0f  // 待补正量幅度上限（度，安全轨）
 
 class ICM42670Lite {
  public:
@@ -78,9 +81,11 @@ class ICM42670Lite {
   float temperatureC() const { return _tempC; }
   float sessionBiasZ() const { return _sessionBias[2]; }  // Z 轴会话零偏 °/s（调试）
   float yawDriftComp() const { return yawDrift; }         // 漂移补偿累计量（调试）
+  float yawCorrComp() const { return _corrNow; }          // 运动期补正当前值（调试）
 
   volatile uint32_t i2cErrorCount = 0;  // I2C 事务失败累计（供健康监测）
-  volatile uint32_t gyroClipCount = 0;   // 陀螺 ADC 削顶累计（高速旋转排查：±2000dps 档下应基本不动）
+  volatile uint32_t gyroClipCount = 0;   // 陀螺 ADC 削顶累计（±500dps 档：正常转弯不该涨，
+                                         // 暴力快甩会涨属预期——后空翻等高速动作不依赖 yaw）
   volatile uint32_t accelClipCount = 0;  // 加速度 ADC 削顶累计（强冲击场景参考）
   float a_real[3];          // 去重力加速度，单位 g（imu.cpp 读取）
   float ypr[3];             // 偏航/俯仰/横滚，度（偏航未取负，imu.cpp 处理约定）
@@ -115,6 +120,8 @@ class ICM42670Lite {
   int _ringHead, _ringFill;
   float _sumG[3], _sumSqG[3], _sumA, _sumSqA;  // 滑窗增量统计（O(1) 均值/方差）
   float _sessionBias[3];        // 会话零偏：ZUPT 维护，applyCalibration 里扣除
+  float _movingTime;            // 运动段累积时长（秒；与 yawDrift 按瞬时静止门控分工）
+  float _corrTarget, _corrNow;  // 运动期漂移补正：目标值 / 限速逼近中的当前值（度）
   float _medianScratch[ZUPT_WIN];
   int writeReg(uint8_t reg, uint8_t val);
   int readReg(uint8_t reg, uint8_t *buf, uint8_t len);

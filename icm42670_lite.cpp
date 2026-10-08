@@ -237,6 +237,10 @@ void ICM42670Lite::getImuGyro() {
     // 陀螺速率转 rad/s 后进融合
     MadgwickQuaternionUpdate(a_real[0], a_real[1], a_real[2], _gyroDps[0] * DEG_TO_RAD,
                              _gyroDps[1] * DEG_TO_RAD, _gyroDps[2] * DEG_TO_RAD, deltaT);
+    // 运动期漂移补正：叠加到偏航输出并重新归一化（不触碰 Madgwick 积分器）
+    ypr[0] += _corrNow;
+    while (ypr[0] > 180.0f) ypr[0] -= 360.0f;
+    while (ypr[0] <= -180.0f) ypr[0] += 360.0f;
   }
 }
 
@@ -246,13 +250,13 @@ void ICM42670Lite::getImuGyro() {
      MOVING ──统计量连续满足──> PENDING ──保持 300ms──> STATIONARY
         ^────── 任一统计量破坏，瞬时退出 ──────┘│
      STATIONARY 期间每 100ms：滑窗中位数 = 零偏残差 δ，
-     会话零偏 += 0.4·δ（慢混合，applyCalibration 里扣除）。
+     会话零偏 += 0.4·δ（慢混合，applyCalibration 里扣除）；
+     并按 δ_z × 运动时长 计入 yaw 补正目标（有界：时长≤60s、幅度≤45°）。
    静止判据（滑窗 80 样本/400ms）：三轴角速度 STD < 0.2°/s
    且加速度模 STD < 0.05g。STD 对常值零偏天然免疫，
    停机振荡（零均值）由确认时间过滤，被拎着移动由加速度模过滤。
-   注：曾有过"运动期误差追补"（δ×非静止时长 回补 yaw），2026-10-06
-   实测会累积数百度异常偏移，已移除——运动期的历史漂移交给外部
-   参考（激光 SLAM/EKF）或下次完整标定处理。
+   防双重补偿：静止瞬间的慢漂移归 yawDrift（Madgwick 内），运动段
+   （含 >1°/s 的残余零偏造成的假运动）归本追补，两者按同一门控分工。
    ============================================================ */
 void ICM42670Lite::zuptUpdate() {
   if (_sampleSeq == _zuptSeenSeq) return;  // 无新样本（样本锁定，防重复摄取）
@@ -302,6 +306,12 @@ void ICM42670Lite::zuptUpdate() {
   }
 
   // ---- 状态机（慢进快出）----
+  // 与 yawDrift 的分工：瞬时静止（三轴 <1°/s）的慢漂移归 yawDrift，
+  // 运动段归追补；两者按同一门控划分，同一段漂移不会被补两次
+  bool stillInstant = fabsf(_gyroDps[0]) < 1.0f && fabsf(_gyroDps[1]) < 1.0f
+                      && fabsf(_gyroDps[2]) < 1.0f;
+  if (!stillInstant) _movingTime += 0.005f;  // 每个新样本 5ms
+
   switch (_zs) {
     case ZUPT_MOVING:
       if (statsOk) {
@@ -322,13 +332,30 @@ void ICM42670Lite::zuptUpdate() {
         _zs = ZUPT_MOVING;
         break;
       }
-      if (++_zuptCnt >= ZUPT_EST_TICKS) {  // 每 100ms 用滑窗中位数刷新会话零偏
+      if (++_zuptCnt >= ZUPT_EST_TICKS) {  // 每 100ms 刷新一次估计
         _zuptCnt = 0;
-        for (int i = 0; i < 3; i++)
-          _sessionBias[i] += ZUPT_BLEND * windowMedian(_ringG[i]);
+        float delta[3];
+        for (int i = 0; i < 3; i++) delta[i] = windowMedian(_ringG[i]);
+        for (int i = 0; i < 3; i++) _sessionBias[i] += ZUPT_BLEND * delta[i];
+        // 运动期漂移追补（第一版行为的"有界版"）：δ_z × 运动时长。
+        // 时长上限防长非静止期积累出荒谬值；幅度上限为安全轨
+        float t = _movingTime > ZUPT_CORR_T_CAP_S ? ZUPT_CORR_T_CAP_S : _movingTime;
+        if (t > 0) {
+          _corrTarget -= delta[2] * t;
+          if (_corrTarget > ZUPT_CORR_MAX_DEG) _corrTarget = ZUPT_CORR_MAX_DEG;
+          else if (_corrTarget < -ZUPT_CORR_MAX_DEG) _corrTarget = -ZUPT_CORR_MAX_DEG;
+          _movingTime = 0;
+        }
       }
       break;
   }
+
+  // 补正限速逼近（施加在 getImuGyro 的融合输出侧）
+  float step = ZUPT_SLEW_DPS * 0.005f;
+  float d = _corrTarget - _corrNow;
+  if (d > step) d = step;
+  else if (d < -step) d = -step;
+  _corrNow += d;
 }
 
 void ICM42670Lite::zuptReset() {
@@ -338,6 +365,8 @@ void ICM42670Lite::zuptReset() {
   _ringHead = _ringFill = 0;
   for (int i = 0; i < 3; i++) _sumG[i] = _sumSqG[i] = _sessionBias[i] = 0;
   _sumA = _sumSqA = 0;
+  _movingTime = 0;
+  _corrTarget = _corrNow = 0;
 }
 
 // 滑窗中位数：复制到静态草稿区插入排序。只在 STATIONARY 每 100ms

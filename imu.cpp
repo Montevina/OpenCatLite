@@ -4,8 +4,9 @@
    融合（lite 库内）-> 异常判定 -> 自旋锁下发布快照。主循环只调
    imuGetSnapshot。
    参数：IMU_PERIOD 5ms、任务栈 2500、异常阈值表见函数内注释。
-   陀螺量程 ±2000dps（原版 ±250 会在手快转时削顶少算角度，
-   2026-10-06 实测确认后提高；量化噪声 +12% 相对器件本底可忽略）。
+   陀螺量程 ±500dps：导航场景全在低速（步态/转弯远低于 500°/s），
+   500 覆盖有余；高速动作（后空翻等）本就不需要 yaw 导航，超量程削顶可接受。
+   量程越小量化噪声越低（±500 的 1 LSB = 0.015°/s），低速精度优先。
    ============================================================ */
 #include <Arduino.h>
 #include <Wire.h>
@@ -83,6 +84,7 @@ static void publish(int8_t persistent, uint8_t events) {
   sPub.clipAccel = icm.accelClipCount;
   sPub.yawDrift = icm.yawDriftComp();
   sPub.gyroBiasZ = icm.sessionBiasZ();
+  sPub.yawCorr = icm.yawCorrComp();
   sPub.seq = ++sSeq;
   sPub.timestamp = millis();
   portEXIT_CRITICAL(&sMux);
@@ -153,7 +155,7 @@ void imuSetup(bool calibrateNow) {
   }
   Serial.println("[IMU] ICM42670 found");
   icm.begin();
-  icm.init(200, 2, 2000);  // ODR 200Hz / 加速度 ±2g / 陀螺 ±2000dps（见文件头注释）
+  icm.init(200, 2, 500);  // ODR 200Hz / 加速度 ±2g / 陀螺 ±500dps（见文件头注释）
   delay(10);
 
   if (storeHasImuOffset()) {
