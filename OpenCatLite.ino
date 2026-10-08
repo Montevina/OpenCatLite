@@ -40,6 +40,11 @@
 #include "robot.h"
 #include "command.h"
 
+// —— 临时验证开关（command 层就绪后连同 loop() 里的临时代码一起删除）——
+// 置 1 = 开机慢扫头偏航舵机（验证舵机驱动用）。
+// 默认 0：扫动给机身注入的振动会干扰 ZUPT 静止检测的上机验证。
+#define TEMP_SERVO_SWEEP 0
+
 void setup() {
   Serial.begin(SERIAL_BAUD);
 
@@ -83,8 +88,9 @@ void loop() {
     }
   }
 
-  // —— 临时：舵机上机验证（command 层的 'c'/'i' 就绪后删除本段）——
+  // —— 临时：舵机上机验证（TEMP_SERVO_SWEEP=1 时启用；'c'/'i' 就绪后删除本段）——
   // 只动 0 号关节（头偏航，最安全）：±30° 慢扫，25°/s
+#if TEMP_SERVO_SWEEP
   static uint32_t lastServoSweep = 0;
   static float sweepAngle = 0;
   static int8_t sweepDir = 1;
@@ -95,4 +101,5 @@ void loop() {
     if (sweepAngle <= -30) sweepDir = 1;
     jointsSetAngle(0, sweepAngle);
   }
+#endif
 }
