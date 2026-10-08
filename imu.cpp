@@ -81,6 +81,8 @@ static void publish(int8_t persistent, uint8_t events) {
   sPub.temperature = icm.temperatureC();
   sPub.clipGyro = icm.gyroClipCount;
   sPub.clipAccel = icm.accelClipCount;
+  sPub.yawDrift = icm.yawDriftComp();
+  sPub.gyroBiasZ = icm.sessionBiasZ();
   sPub.seq = ++sSeq;
   sPub.timestamp = millis();
   portEXIT_CRITICAL(&sMux);
@@ -93,7 +95,7 @@ static void imuTask(void *param) {
   while (sRunning) {
     if (millis() - lastSample > IMU_PERIOD_MS) {
       lastSample = millis();
-      icm.getImuGyro();  // 读寄存器 + Madgwick 融合 + 施加 ZUPT yaw 校正
+      icm.getImuGyro();  // 读寄存器 + Madgwick 融合 + 偏航归一化
       icm.zuptUpdate();  // ZUPT：静止检测 + 会话零偏重估（机会主义，不阻塞）
       for (uint8_t i = 0; i < 3; i++) {
         sAcc[i] = icm.a_real[i] * 10.0;  // 原版 xyzReal = a_real * GRAVITY

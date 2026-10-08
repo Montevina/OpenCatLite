@@ -36,7 +36,7 @@ enum ImuEventBits : uint8_t {
 
 struct ImuSnapshot {
   float ypr[3];        // 偏航/俯仰/横滚（度）。偏航已取负 = 极坐标约定（右转为负），
-                       // 且含 ZUPT 零偏校正（输出侧限速叠加，平滑无跳变）
+                       // 输出归一化 (-180,180]；ZUPT 会话零偏已扣除
   float accelReal[3];  // 去重力加速度，单位 1g×10（原版 xyzReal 同款，直立时 z≈+10）
   int8_t exception;    // ImuException，持续性
   uint8_t events;      // ImuEventBits 累积，imuGetSnapshot 读走后清零
@@ -44,6 +44,8 @@ struct ImuSnapshot {
   float temperature;   // 芯片温度 °C（暂只记录不补偿，留作温漂数据分析）
   uint32_t clipGyro;   // 陀螺削顶累计（诊断：高速旋转若仍增长说明超 2000dps）
   uint32_t clipAccel;  // 加速度削顶累计（诊断）
+  float yawDrift;      // 偏航漂移补偿累计量（度；调试：应保持小值，巨大=异常）
+  float gyroBiasZ;     // Z 轴会话零偏 °/s（ZUPT 学习结果，调试）
   uint32_t seq;        // 快照序号，调用方可用来判断是否更新过
   uint32_t timestamp;  // millis() 时刻
 };
