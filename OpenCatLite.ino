@@ -75,7 +75,7 @@ void loop() {
 
   // —— 临时：IMU 驱动上机验证（command 层的 'gP' 就绪后删除本段）——
   static uint32_t lastImuPrint = 0;
-  if (now - lastImuPrint >= 500) {
+  if (now - lastImuPrint >= 50) {
     lastImuPrint = now;
     ImuSnapshot snap;
     if (imuGetSnapshot(&snap)) {
