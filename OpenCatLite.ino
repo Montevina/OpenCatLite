@@ -41,9 +41,9 @@
 #include "command.h"
 
 // —— 临时验证开关（command 层就绪后连同 loop() 里的临时代码一起删除）——
-// 置 1 = 开机慢扫头偏航舵机（验证舵机驱动用）。
-// 默认 0：扫动给机身注入的振动会干扰 ZUPT 静止检测的上机验证。
-#define TEMP_SERVO_SWEEP 0
+// 置 1 = 开机逐关节测试所有舵机（±15° 慢摆，串口打印关节/舵机/GPIO 映射）。
+// 本轮置 1 做舵机上机验证；验证完改回 0（舵机测试的振动会干扰 ZUPT 静止检测）。
+#define TEMP_SERVO_TEST 1
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
@@ -89,18 +89,40 @@ void loop() {
     }
   }
 
-  // —— 临时：舵机上机验证（TEMP_SERVO_SWEEP=1 时启用；'c'/'i' 就绪后删除本段）——
-  // 只动 0 号关节（头偏航，最安全）：±30° 慢扫，25°/s
-#if TEMP_SERVO_SWEEP
-  static uint32_t lastServoSweep = 0;
-  static float sweepAngle = 0;
-  static int8_t sweepDir = 1;
-  if (now - lastServoSweep >= 40) {
-    lastServoSweep = now;
-    sweepAngle += 1.0f * sweepDir;
-    if (sweepAngle >= 30) sweepDir = -1;
-    if (sweepAngle <= -30) sweepDir = 1;
-    jointsSetAngle(0, sweepAngle);
+  // —— 临时：舵机逐关节上机验证（TEMP_SERVO_TEST=1 时启用；'c'/'i' 就绪后删除本段）——
+  // 依次让每个存在的关节：+15° → -15° → 回 0°，每步 1°、40ms（25°/s）。
+  // 用途：① 确认每个舵机都能动 ② 核对 打印的关节号/舵机号/GPIO ↔ 实际物理部位
+  // ③ 观察运动方向（正负）是否符合预期
+#if TEMP_SERVO_TEST
+  static uint32_t lastServoStep = 0;
+  static int8_t testJoint = -99;  // -99 = 未初始化
+  static int8_t testPhase = 0;    // 0:+15°  1:-15°  2:回0  3:切换下个关节
+  static float testAngle = 0;
+  if (testJoint == -99) {  // 首次：找到第一个存在的关节
+    for (testJoint = 0; testJoint < DOF && JOINT_SERVO[testJoint] < 0; testJoint++)
+      ;
+    testAngle = 0;
+    testPhase = 0;
+    Serial.printf("[servo test] joint %d -> servo %d (GPIO %d)\n",
+                  testJoint, JOINT_SERVO[testJoint], SERVO_PIN[JOINT_SERVO[testJoint]]);
+  } else if (now - lastServoStep >= 40) {  // 25°/s
+    lastServoStep = now;
+    if (testPhase < 3) {
+      float target = (testPhase == 0) ? 15.0f : (testPhase == 1) ? -15.0f : 0.0f;
+      if (testAngle < target) testAngle += 1;
+      else if (testAngle > target) testAngle -= 1;
+      jointsSetAngle(testJoint, testAngle);
+      if (testAngle == target) testPhase++;
+    } else {  // 本关节完成：转到下一个存在的关节
+      delay(300);
+      do {
+        testJoint = (testJoint + 1) % DOF;
+      } while (JOINT_SERVO[testJoint] < 0);
+      testAngle = 0;
+      testPhase = 0;
+      Serial.printf("[servo test] joint %d -> servo %d (GPIO %d)\n",
+                    testJoint, JOINT_SERVO[testJoint], SERVO_PIN[JOINT_SERVO[testJoint]]);
+    }
   }
 #endif
 }
