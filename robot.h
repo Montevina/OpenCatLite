@@ -42,9 +42,9 @@ RobotMode robotMode();
 const char *robotModeName();           // 调试打印用
 
 // 命令层调用的动作入口（内部会做模式迁移），实现对照原版各 case：
-void robotSkill(const char *name);     // 'k'：姿势/步态/行为 三选一
+bool robotSkill(const char *name);     // 'k'：true = 已开始动作（第一切片：仅静态姿势 sit/calib）
 void robotRest();                      // 'd'
-void robotCalibratePosture();          // 'c'
+bool robotCalibratePosture();          // 'c'：true = 已开始转向校准姿势
 
 // ---- Bittle R 专属（原版 ROBOT_ARM 分支，X 上不可用）----
 #if defined(BITTLE_R)

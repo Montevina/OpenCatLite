@@ -2,7 +2,8 @@
 
 OpenCat ESP32 (Bittle) 固件重构。五层架构，模块逐个实现中，已实现：
 **imu**（ICM42670 融合驱动 + ZUPT 零速更新）、**store**（NVS 持久化）、
-**servoPwm**（LEDC 12 通道舵机输出）、**joints**（逻辑关节->脉宽换算链）。
+**servoPwm**（LEDC 12 通道舵机输出）、**joints**（逻辑关节->脉宽换算链）、
+**skills/motion/robot/command 第一切片**（串口 `k sit` 坐姿、`c` 校准、`s`/`a` 存/弃、`?` 帮助）。
 其余模块为空函数骨架，每个空函数的 TODO 注释标明参考原版（Petoi OpenCatEsp32）
 的哪个文件、哪些函数、搬运时要注意什么。
 

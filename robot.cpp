@@ -25,14 +25,43 @@
 // TODO: robotSkill('k')：skillsFind -> skillsLoad -> 按 period 迁移到
 //   POSTURE/GAIT/BEHAVIOR 之一；'R' 后缀镜像在 load 时做（参考 mirror()）
 
+// TODO: robotSkill('k') 完整版：按 period 迁移到 POSTURE/GAIT/BEHAVIOR；
+//   'R' 后缀镜像（参考原版 mirror()）——第一切片只做了静态姿势且无镜像
+
 void robotSetup() { /* TODO: 开机 beep/旋律 + 进 MODE_REST */ }
 void robotUpdate(uint32_t now) { (void)now; /* TODO */ }
 void robotHandleEvent(RobotEvent ev) { (void)ev; /* TODO */ }
 RobotMode robotMode() { return MODE_BOOT; /* TODO */ }
 const char *robotModeName() { return "boot"; /* TODO */ }
-void robotSkill(const char *name) { (void)name; /* TODO */ }
-void robotRest() { /* TODO */ }
-void robotCalibratePosture() { /* TODO */ }
+
+// ---- 第一切片：静态姿势播放（将来并入完整状态机的 MODE_POSTURE 分支）----
+static bool playPosture(const char *name) {
+  int idx = skillsFind(name);
+  if (idx < 0) {
+    Serial.printf("[robot] skill '%s' not found (this build: sit, calib)\n", name);
+    return false;
+  }
+  if (!skillsLoad(idx)) {
+    Serial.printf("[robot] skill '%s' unsupported (single-frame postures only)\n", name);
+    return false;
+  }
+  float angles[DOF];
+  if (!skillsReadFrame(0, angles)) return false;
+  motionStart(angles, 1);  // 姿势过渡速度 1°/步（同原版 transformSpeed）
+  Serial.printf("[robot] %s\n", name);
+  return true;
+}
+
+bool robotSkill(const char *name) {
+  if (name == NULL || name[0] == '\0') return false;
+  return playPosture(name);
+}
+
+void robotRest() { /* TODO: 'd' 趴下 + 松舵 */ }
+
+bool robotCalibratePosture() {
+  return playPosture("calib");
+}
 
 // ---- Bittle R 专属（原版 ROBOT_ARM 分支，X 上不可用）----
 #if defined(BITTLE_R)

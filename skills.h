@@ -9,8 +9,8 @@
            行为另有 loopCycle[3]（循环起止行、次数，负数=无限）
    与原版的区别：读出的帧拷贝进调用方缓冲，绝不把 dutyAngles
    指针别进命令缓冲区（原版 skill.h inplaceShift() 的别名技巧废弃）。
-   挖数据：src/InstinctBittleESP.h 原样搬运（progmemPointer 表 + 数组）。
-   挖解析：src/skill.h buildSkill()/formatSkill()（删 inplaceShift）。
+   数据逐字节搬自原版 InstinctBittleESP.h / _arm.h（BITTLE / BITTLE_R 各自的 sit）。
+   第一切片已实现：sit / calib 两个静态姿势（period==1），表结构可直扩。
    ============================================================ */
 #ifndef SKILLS_H
 #define SKILLS_H

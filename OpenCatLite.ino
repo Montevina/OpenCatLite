@@ -40,10 +40,10 @@
 #include "robot.h"
 #include "command.h"
 
-// —— 临时验证开关（command 层就绪后连同 loop() 里的临时代码一起删除）——
-// 置 1 = 开机逐关节测试所有舵机（±15° 慢摆，串口打印关节/舵机/GPIO 映射）。
-// 本轮置 1 做舵机上机验证；验证完改回 0（舵机测试的振动会干扰 ZUPT 静止检测）。
-#define TEMP_SERVO_TEST 1
+// —— 临时验证开关（命令层 k/c 已可用，本段待整体删除）——
+// 置 1 = 开机逐关节测试所有舵机（±5° 慢摆，串口打印关节/舵机/GPIO 映射）。
+// 日常驱动已交给 'k sit'/'c' 命令，默认 0；纯硬件排查时再置 1。
+#define TEMP_SERVO_TEST 0
 
 void setup() {
   Serial.begin(SERIAL_BAUD);

@@ -1,23 +1,92 @@
+/* ============================================================
+   skills.cpp —— 技能数据表实现（第一切片：sit / calib 两个静态姿势）
+   数据逐字节搬自原版：
+     calib → InstinctBittleESP.h（X 与 R 相同：全零 = 零点/装配姿态）
+     sit   → X 用 InstinctBittleESP.h、R 用 InstinctBittleESP_arm.h
+             （差异只在 joint 2：X 是尾巴 -45°，R 是夹爪保持 0°）
+   格式：4 字节头 [period, expectedRoll, expectedPitch, angleRatio]
+   + |period| × 帧（静态姿势 = 1 帧 × 16 关节）。
+   ============================================================ */
 #include <Arduino.h>
+#include "board.h"
 #include "skills.h"
 
-// TODO: 技能数据表按机型二选一：
-//   Bittle X <- InstinctBittleESP.h    Bittle R <- InstinctBittleESP_arm.h
-// TODO: Bittle R 的查找规则（原版 loadBySkillName 的 ROBOT_ARM 分支）：
-//   方向性技能(末字符 F/L/R)先试 "去掉末字符+Arm+末字符" 的变体
-//   （如 wkF -> wkArmF），命中则用臂优化步态，否则回退普通版
-// TODO: 'R' 镜像逻辑照搬原版 mirror()，但 Bittle R 不镜像 2 号关节(夹爪)
-// TODO: Bittle R 载入姿势/非 Arm 优化步态后调重心补偿：肩俯仰 0/1 列
-//   +角度、4/5 列 -角度x1.2（原版 shiftCenterOfMass(-10)），补偿臂的重量
-// TODO: 模块内部静态帧缓冲（最大：行为 |period| x 20，约 2.5KB，
-//   对应原版 BUFF_LEN 的容量计算），skillsLoad 做值拷贝
+#define SKILL_HEADER 4
+#define POSTURE_DOF 16
 
-void skillsInit() { /* TODO */ }
-int skillsFind(const char *name) { (void)name; return -1; /* TODO */ }
-bool skillsLoad(int index) { (void)index; return false; /* TODO */ }
-const SkillInfo *skillsInfo() { return nullptr; /* TODO */ }
-uint8_t skillsFrameCount() { return 0; /* TODO */ }
-uint8_t skillsFrameSize() { return 0; /* TODO */ }
+// calib：全零，即零点姿态（用于 'c' 校准）
+static const int8_t DATA_calib[] = {
+    1, 0, 0, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+};
+
+#if defined(BITTLE_R)
+// Bittle R：joint 2 = 头部夹爪，sit 时保持中立（原版 _arm.h）
+static const int8_t DATA_sit[] = {
+    1, 0, -30, 1,
+    0, 0, 0, 0, -5, -5, 20, 20, 45, 45, 105, 105, 45, 45, -45, -45,
+};
+#else
+// Bittle X：joint 2 = 尾巴，sit 时垂尾 -45°（原版 InstinctBittleESP.h）
+static const int8_t DATA_sit[] = {
+    1, 0, -30, 1,
+    0, 0, -45, 0, -5, -5, 20, 20, 45, 45, 105, 105, 45, 45, -45, -45,
+};
+#endif
+
+struct SkillDef {
+  const char *name;
+  const int8_t *data;
+};
+static const SkillDef SKILLS[] = {
+    {"calib", DATA_calib},
+    {"sit", DATA_sit},
+};
+#define SKILL_COUNT ((int)(sizeof(SKILLS) / sizeof(SKILLS[0])))
+
+// ---- 载入状态（下一片扩展为多帧缓冲）----
+static SkillInfo sInfo;
+static int8_t sFrame[POSTURE_DOF];
+static bool sLoaded = false;
+
+void skillsInit() {
+  Serial.printf("[skills] %d postures:", SKILL_COUNT);
+  for (int i = 0; i < SKILL_COUNT; i++) Serial.printf(" %s", SKILLS[i].name);
+  Serial.println();
+}
+
+int skillsFind(const char *name) {
+  for (int i = 0; i < SKILL_COUNT; i++)
+    if (!strcmp(SKILLS[i].name, name)) return i;
+  return -1;
+}
+
+bool skillsLoad(int index) {
+  if (index < 0 || index >= SKILL_COUNT) return false;
+  const int8_t *d = SKILLS[index].data;
+  if (d[0] != 1) return false;  // 本切片只支持单帧静态姿势
+  sInfo.name = SKILLS[index].name;
+  sInfo.period = d[0];
+  sInfo.ratio = (uint8_t)d[3];
+  for (int i = 0; i < POSTURE_DOF; i++) sFrame[i] = d[SKILL_HEADER + i];
+  sLoaded = true;
+  return true;
+}
+
+const SkillInfo *skillsInfo() {
+  return sLoaded ? &sInfo : nullptr;
+}
+
+uint8_t skillsFrameCount() {
+  return sLoaded ? 1 : 0;
+}
+
+uint8_t skillsFrameSize() {
+  return sLoaded ? POSTURE_DOF : 0;
+}
+
 bool skillsReadFrame(uint8_t frame, float *outAngles) {
-  (void)frame; (void)outAngles; return false;  // TODO
+  if (!sLoaded || frame != 0) return false;
+  for (int i = 0; i < POSTURE_DOF; i++) outAngles[i] = sFrame[i] * sInfo.ratio;
+  return true;
 }
