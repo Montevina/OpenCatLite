@@ -73,30 +73,14 @@ void loop() {
   balanceUpdate(now);   // 读 IMU 快照，算各关节平衡修正量
   buzzerUpdate(now);    // 非阻塞旋律队列
 
-  // —— 临时：IMU 驱动上机验证（command 层的 'gP' 就绪后删除本段）——
-  static uint32_t lastImuPrint = 0;
-  if (now - lastImuPrint >= 50) {
-    lastImuPrint = now;
-    ImuSnapshot snap;
-    if (imuGetSnapshot(&snap)) {
-      Serial.printf("ypr %7.1f %7.1f %7.1f | acc %6.2f %6.2f %6.2f | ex %d ev 0x%02X | st %d T %4.1f | c %lu/%lu | d %6.1f b %5.2f y %6.1f | %lu\n",
-                    snap.ypr[0], snap.ypr[1], snap.ypr[2],
-                    snap.accelReal[0], snap.accelReal[1], snap.accelReal[2],
-                    snap.exception, snap.events, snap.still ? 1 : 0, snap.temperature,
-                    (unsigned long)snap.clipGyro, (unsigned long)snap.clipAccel,
-                    snap.yawDrift, snap.gyroBiasZ, snap.yawCorr,
-                    (unsigned long)snap.seq);
-    }
-  }
-
-  // —— 临时：舵机逐关节上机验证（TEMP_SERVO_TEST=1 时启用；'c'/'i' 就绪后删除本段）——
-  // 依次让每个存在的关节：+15° → -15° → 回 0°，每步 1°、40ms（25°/s）。
-  // 用途：① 确认每个舵机都能动 ② 核对 打印的关节号/舵机号/GPIO ↔ 实际物理部位
-  // ③ 观察运动方向（正负）是否符合预期
+  // —— 临时：舵机逐通道上机验证（TEMP_SERVO_TEST=1 时启用；'c'/'i' 就绪后删除本段）——
+  // 依次让每个存在的关节（共 12 个 PWM 通道）：+5° → -5° → 回 0°，一次只动一个，
+  // 每步 1°、40ms。用途：① 确认 12 个通道/舵机都能动 ② 核对 打印的
+  // 关节号/舵机号/GPIO ↔ 实际物理部位（某通道无反应时，留意其他通道测试时是否有部位在动）
 #if TEMP_SERVO_TEST
   static uint32_t lastServoStep = 0;
   static int8_t testJoint = -99;  // -99 = 未初始化
-  static int8_t testPhase = 0;    // 0:+15°  1:-15°  2:回0  3:切换下个关节
+  static int8_t testPhase = 0;    // 0:+5°  1:-5°  2:回0  3:切换下个关节
   static float testAngle = 0;
   if (testJoint == -99) {  // 首次：找到第一个存在的关节
     for (testJoint = 0; testJoint < DOF && JOINT_SERVO[testJoint] < 0; testJoint++)
@@ -108,7 +92,7 @@ void loop() {
   } else if (now - lastServoStep >= 40) {  // 25°/s
     lastServoStep = now;
     if (testPhase < 3) {
-      float target = (testPhase == 0) ? 15.0f : (testPhase == 1) ? -15.0f : 0.0f;
+      float target = (testPhase == 0) ? 5.0f : (testPhase == 1) ? -5.0f : 0.0f;
       if (testAngle < target) testAngle += 1;
       else if (testAngle > target) testAngle -= 1;
       jointsSetAngle(testJoint, testAngle);
